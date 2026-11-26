@@ -1,0 +1,59 @@
+---
+- name: Step 1 - Connect and Validate Image on EX
+  hosts: all
+  gather_facts: no
+  connection: ansible.netcommon.netconf
+
+  vars:
+    image_filename: "junos-ex-x86-64-25.2R2-S2.tgz"
+    expected_md5: "65aa6135da1963993288f48344d1e48d"
+    image_full_path: "/var/tmp/{{ image_filename }}"
+
+  tasks:
+    - name: Check NETCONF connectivity
+      ansible.netcommon.cli_command:
+        command: "show version | match Junos:"
+      register: ver_out
+      ignore_errors: yes
+
+    - name: Fail if NETCONF unreachable
+      fail:
+        msg: "Cannot connect to device via NETCONF. Check inventory vars and credentials."
+      when: ver_out.failed
+
+    - name: Show current version for audit
+      debug:
+        msg: "Current version: {{ ver_out.stdout_lines | default([]) }}"
+
+    - name: Check if image file exists on device
+      ansible.netcommon.cli_command:
+        command: "file checksum md5 {{ image_full_path }}"
+      register: md5_out
+      ignore_errors: yes
+
+    - name: Fail if image missing or MD5 command errors
+      fail:
+        msg: >
+          Image validation failed. Possible reasons:
+          1) File {{ image_full_path }} does not exist on the device.
+          2) Permission denied or RPC error.
+          Raw output: {{ md5_out.stdout | default('N/A') }}
+      when: md5_out.failed
+
+    - name: Extract MD5 digest from output
+      set_fact:
+        actual_md5: "{{ md5_out.stdout | regex_search('[a-f0-9]{32}') }}"
+
+    - name: Fail if MD5 not found in output
+      fail:
+        msg: "Could not parse a 32-char MD5 digest from output: {{ md5_out.stdout }}"
+      when: actual_md5 is not defined
+
+    - name: Compare MD5 with expected value
+      assert:
+        that:
+          - actual_md5 == expected_md5
+        fail_msg: >
+          MD5 MISMATCH. Expected {{ expected_md5 }}, got {{ actual_md5 }}.
+          The image on the device is corrupted or is the wrong file.
+        success_msg: "MD5 verification PASSED. Image is intact and matches expected release."
