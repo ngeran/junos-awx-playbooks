@@ -2,11 +2,14 @@
 - name: Step 1 - Connect and Validate Image on EX
   hosts: all
   gather_facts: no
-  connection: ansible.netcommon.netconf
-
+  connection: netconf
+  
   vars:
-    # This prevents the "SSH password:" prompt
+    # Force connection type and credentials
     ansible_network_os: junipernetworks.junos.junos
+    ansible_connection: netconf
+    ansible_user: admin
+    ansible_password: manolis1
     
     # Your image variables
     image_filename: "junos-ex-x86-64-25.2R2-S2.tgz"
