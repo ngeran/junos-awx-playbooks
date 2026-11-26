@@ -2,12 +2,10 @@
 - name: Step 1 - Connect and Validate Image on EX
   hosts: all
   gather_facts: no
-  connection: netconf
-  
+  connection: local
+
   vars:
-    # Force connection type and credentials
-    ansible_network_os: junipernetworks.junos.junos
-    ansible_connection: netconf
+    # Credentials - these are used by the juniper.device module
     ansible_user: admin
     ansible_password: manolis1
     
@@ -17,13 +15,16 @@
     image_full_path: "/var/tmp/{{ image_filename }}"
 
   tasks:
-    - name: 1. Check NETCONF connectivity and get current version
+    - name: 1. Check connectivity and get current version
       juniper.device.command:
         commands: "show version | match Junos:"
+        host: "{{ ansible_host }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password }}"
       register: ver_out
       ignore_errors: yes
 
-    - name: 1b. Fail if NETCONF unreachable
+    - name: 1b. Fail if unreachable
       fail:
         msg: "Cannot connect to device. Error: {{ ver_out.msg | default('Unknown connection error') }}"
       when: ver_out.failed
@@ -35,6 +36,9 @@
     - name: 3. Check if image file exists and get MD5
       juniper.device.command:
         commands: "file checksum md5 {{ image_full_path }}"
+        host: "{{ ansible_host }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password }}"
       register: md5_out
       ignore_errors: yes
 
