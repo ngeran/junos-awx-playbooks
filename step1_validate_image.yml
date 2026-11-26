@@ -5,55 +5,61 @@
   connection: ansible.netcommon.netconf
 
   vars:
+    # This prevents the "SSH password:" prompt
+    ansible_network_os: junipernetworks.junos.junos
+    
+    # Your image variables
     image_filename: "junos-ex-x86-64-25.2R2-S2.tgz"
     expected_md5: "65aa6135da1963993288f48344d1e48d"
     image_full_path: "/var/tmp/{{ image_filename }}"
 
   tasks:
-    - name: Check NETCONF connectivity
-      ansible.netcommon.cli_command:
-        command: "show version | match Junos:"
+    - name: 1. Check NETCONF connectivity and get current version
+      juniper.device.command:
+        commands: "show version | match Junos:"
       register: ver_out
       ignore_errors: yes
 
-    - name: Fail if NETCONF unreachable
+    - name: 1b. Fail if NETCONF unreachable
       fail:
-        msg: "Cannot connect to device via NETCONF. Check inventory vars and credentials."
+        msg: "Cannot connect to device. Error: {{ ver_out.msg | default('Unknown connection error') }}"
       when: ver_out.failed
 
-    - name: Show current version for audit
+    - name: 2. Show current version for audit
       debug:
-        msg: "Current version: {{ ver_out.stdout_lines | default([]) }}"
+        msg: "Current Junos Version: {{ ver_out.stdout_lines | default([]) }}"
 
-    - name: Check if image file exists on device
-      ansible.netcommon.cli_command:
-        command: "file checksum md5 {{ image_full_path }}"
+    - name: 3. Check if image file exists and get MD5
+      juniper.device.command:
+        commands: "file checksum md5 {{ image_full_path }}"
       register: md5_out
       ignore_errors: yes
 
-    - name: Fail if image missing or MD5 command errors
+    - name: 3b. Fail if image missing
       fail:
         msg: >
-          Image validation failed. Possible reasons:
-          1) File {{ image_full_path }} does not exist on the device.
-          2) Permission denied or RPC error.
-          Raw output: {{ md5_out.stdout | default('N/A') }}
+          Image validation failed. The file {{ image_full_path }} does not exist or is unreadable.
+          Raw device output: {{ md5_out.stdout | default(md5_out.msg) }}
       when: md5_out.failed
 
-    - name: Extract MD5 digest from output
+    - name: 4. Extract MD5 digest from output
       set_fact:
-        actual_md5: "{{ md5_out.stdout | regex_search('[a-f0-9]{32}') }}"
+        actual_md5: "{{ md5_out.stdout[0] | regex_search('[a-f0-9]{32}') }}"
 
-    - name: Fail if MD5 not found in output
+    - name: 4b. Fail if MD5 not found in output
       fail:
-        msg: "Could not parse a 32-char MD5 digest from output: {{ md5_out.stdout }}"
+        msg: "Could not parse a 32-char MD5 digest. Raw output: {{ md5_out.stdout }}"
       when: actual_md5 is not defined
 
-    - name: Compare MD5 with expected value
+    - name: 5. Compare MD5 with expected value
       assert:
         that:
           - actual_md5 == expected_md5
         fail_msg: >
           MD5 MISMATCH. Expected {{ expected_md5 }}, got {{ actual_md5 }}.
           The image on the device is corrupted or is the wrong file.
-        success_msg: "MD5 verification PASSED. Image is intact and matches expected release."
+        success_msg: "SUCCESS! Image is intact and matches the expected version."
+
+    - name: 6. Final Readiness Check
+      debug:
+        msg: "Device is ready for Step 2 (Version Comparison)."
