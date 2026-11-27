@@ -111,8 +111,44 @@ Measured on an EX2300-C-12P: package validation takes about 11 minutes and a
 reboot about 6.5 minutes. AWX shows no output while a single task runs, so
 expect silence during validation and during the install.
 
-Not yet run against a switch: `install_only` and `install_and_reboot`. Only
-`check_only` has been tested, and it passed every gate.
+## Pre/post comparison
+
+In `install_only` and `install_and_reboot` the play captures the switch state
+before the install (`tasks/collect_state.yml`) and compares it with the state
+after the reboot:
+
+- interfaces (admin/link) and interface descriptions
+- system alarms and chassis alarms (timestamps ignored, since they always change)
+- chassis environment (power, temperature, fan status)
+- Routing Engine state and model
+- core dumps (a new one after the upgrade is a difference)
+- NTP associations (how many are synced)
+- routes per table, with prefix and protocol, plus AS number and router ID
+- OSPF interfaces and neighbors
+- BGP, LDP, RSVP, MPLS and LACP. A protocol that is not configured or not
+  running is shown as such and its comparison is `skipped`.
+- LLDP neighbors
+- the running configuration
+
+Commands sent are listed in `junos_state_commands` in `step2_upgrade.yml`.
+`| no-more` and `| count` are not used: the Junos module rejects them, NETCONF
+never pages, and the route count is computed from the parsed routes.
+`request system configuration rescue save` is an action, not a check; it is
+done once before the install when `save_rescue` is `yes`.
+
+The result is a plain-text table. Set `post_check_strict: no` to report
+differences without failing the job.
+
+Parsing lives in `filter_plugins/junos_state.py`. With `install_only` there is
+no post-check inside the job, because the reboot happens later by hand.
+
+`ansible.cfg` sets `result_format = yaml`, which keeps line breaks in the AWX
+output so the table is readable.
+
+Not yet run against a switch: `install_only` and `install_and_reboot` with the
+comparison included. The comparison itself was tested by capturing the same
+switch twice, and the parser was checked on this EX2300-C. Other Junos
+platforms may print these commands differently.
 
 ## Test order when the switch is back online
 

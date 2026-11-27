@@ -1,0 +1,30 @@
+---
+# Collects the state of one switch into a fact, so it can be taken before and
+# after an upgrade and compared with the junos_diff filter.
+#
+# Required variables:
+#   state_label  text used in task names, e.g. "Before"
+#   state_fact   name of the fact to set, e.g. "state_before"
+- name: "{{ state_label }}: read interfaces, routes, alarms and protocol state"
+  juniper.device.command:
+    commands: "{{ junos_state_commands }}"
+    formats: text
+    timeout: 180
+    host: "{{ ansible_host | default(inventory_hostname) }}"
+    user: "{{ ansible_user }}"
+    passwd: "{{ ansible_password | default(omit) }}"
+  register: state_out
+  ignore_errors: yes
+  changed_when: false
+
+- name: "{{ state_label }}: warn if one of the commands did not run"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: at least one state command failed; the comparison may be
+      incomplete. First failure:
+      {{ state_out.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='msg') | first | default('none') }}
+  when: state_out.failed | default(false)
+
+- name: "{{ state_label }}: normalise the output"
+  ansible.builtin.set_fact:
+    "{{ state_fact }}": "{{ state_out.results | default([]) | junos_state(junos_state_commands) }}"

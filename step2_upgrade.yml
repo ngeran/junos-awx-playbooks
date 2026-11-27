@@ -61,6 +61,42 @@
     reboot_retries: 60
     reboot_delay: 30
 
+    # Fail the job when the post-check differs from the pre-check.
+    post_check_strict: true
+
+    # Read before the install and again after the reboot, then compared.
+    # `| no-more` and `| count` are rejected by juniper.device.command; NETCONF
+    # never pages, and the route count is computed from the parsed routes.
+    junos_state_commands:
+      - "show interfaces terse"
+      - "show interfaces descriptions"
+      - "show system alarms"
+      - "show chassis alarms"
+      - "show chassis environment"
+      - "show chassis routing-engine"
+      - "show system core-dumps"
+      - "show route terse"
+      - "show route summary"
+      - "show configuration protocols bgp | display set"
+      - "show bgp summary"
+      - "show configuration protocols ospf | display set"
+      - "show ospf interface"
+      - "show ospf neighbor"
+      - "show configuration protocols ldp | display set"
+      - "show ldp database"
+      - "show ldp neighbor"
+      - "show configuration protocols rsvp | display set"
+      - "show rsvp interface"
+      - "show rsvp session"
+      - "show configuration protocols mpls | display set"
+      - "show mpls lsp"
+      - "show configuration protocols lldp | display set"
+      - "show lldp neighbors"
+      - "show lacp interfaces"
+      - "show configuration system ntp | display set"
+      - "show ntp associations"
+      - "show configuration | display set"
+
   tasks:
     - name: 0. Check the entered values
       assert:
@@ -319,6 +355,13 @@
              ('WARNING: no rescue configuration is set and saving was not requested.' if rescue_out.stdout | default('') is search('No rescue configuration')
               else 'Rescue configuration already exists.') }}
 
+    # ---------------------------------------------------------------- pre-check
+    - name: 7z. Capture the state before the upgrade (pre-check)
+      ansible.builtin.include_tasks: tasks/collect_state.yml
+      vars:
+        state_label: "Pre-check"
+        state_fact: "state_before"
+
     # ---------------------------------------------------------------- gate 8
     - name: 8. Show what happens next
       debug:
@@ -399,10 +442,37 @@
         msg: "FAIL: {{ inventory_hostname }} rebooted but runs {{ final_version }}, expected {{ target }}. Check why the install did not apply."
       when: final_version != target
 
+    - name: 10z. Capture the state after the upgrade (post-check)
+      ansible.builtin.include_tasks: tasks/collect_state.yml
+      vars:
+        state_label: "Post-check"
+        state_fact: "state_after"
+
+    - name: 10y. Compare the state before and after the upgrade
+      ansible.builtin.set_fact:
+        state_rows: "{{ state_before | junos_diff(state_after) }}"
+
     - name: 11. Report the result
-      debug:
+      ansible.builtin.debug:
         msg:
           - "SUCCESS: {{ inventory_hostname }} upgraded {{ current_version }} -> {{ final_version }}."
           - "Reboot wait started: {{ reboot_started }}"
-          - "Alarms after upgrade:"
-          - "{{ alarms_after }}"
+
+    - name: 11b. Show the pre/post comparison
+      ansible.builtin.debug:
+        msg: "{{ state_rows | junos_table }}"
+
+    - name: 11c. List the differences
+      ansible.builtin.debug:
+        msg: "{{ state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | map(attribute='note') | select('match', '.+') | list }}"
+      when: state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | list | length > 0
+
+    - name: 11d. Fail if the switch is not in the same state as before
+      ansible.builtin.fail:
+        msg: >-
+          The upgrade succeeded but the post-check differs from the pre-check.
+          See the table above. Nothing is reverted automatically; check the
+          switch. Set post_check_strict to no to make this a warning.
+      when:
+        - post_check_strict | bool
+        - state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | list | length > 0
