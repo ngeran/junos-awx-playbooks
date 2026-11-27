@@ -32,9 +32,6 @@
       prompt: "Image file name on the switch (e.g. junos-arm-32-25.2R2-S2.2.tgz)"
     - name: expected_md5
       prompt: "Expected MD5 checksum of the image"
-    - name: target_version
-      prompt: "Target Junos version (blank = taken from the file name)"
-      default: ""
     - name: validate_package
       prompt: "Validate the package against the config before installing? (yes / no)"
       default: "yes"
@@ -50,6 +47,11 @@
     ansible_user: admin
 
     image_full_path: "/var/tmp/{{ image_filename }}"
+
+    # NOT a prompt: AWX drops survey answers that are left blank, and a
+    # vars_prompt that is not answered makes a job wait forever. A blank
+    # value means "take the version from the file name".
+    target_version: ""
 
     # Rule of thumb: the image is ~300 MB and the install needs headroom.
     # The device's own package validation (gate 6) is the authoritative check.
