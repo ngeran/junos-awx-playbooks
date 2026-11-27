@@ -35,7 +35,7 @@
       "variable": "validate_package",
       "required": true,
       "choices": ["yes", "no"],
-      "default": ["yes"]
+      "default": "yes"
     },
     {
       "type": "multiplechoice",
@@ -44,7 +44,7 @@
       "variable": "run_mode",
       "required": true,
       "choices": ["check_only", "install_only", "install_and_reboot"],
-      "default": ["check_only"]
+      "default": "check_only"
     },
     {
       "type": "multiplechoice",
@@ -53,7 +53,7 @@
       "variable": "save_rescue",
       "required": true,
       "choices": ["yes", "no"],
-      "default": ["yes"]
+      "default": "yes"
     }
   ]
 }
