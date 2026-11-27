@@ -41,6 +41,9 @@
     - name: save_rescue
       prompt: "Save the rescue config if none is set? (yes / no)"
       default: "yes"
+    - name: min_free_mb
+      prompt: "Minimum free space in MB required before installing (default 400)"
+      default: "400"
 
   vars:
     # The password comes from the AWX Machine credential (or -k locally).
@@ -53,9 +56,10 @@
     # value means "take the version from the file name".
     target_version: ""
 
-    # Rule of thumb: the image is ~300 MB and the install needs headroom.
-    # The device's own package validation (gate 6) is the authoritative check.
-    min_free_mb: 400
+    # min_free_mb is asked at launch. It is a rule of thumb: 400 MB worked for
+    # an install on an EX2300-C with 444 MB free. A later release can itself be
+    # larger, leaving less space with the same image size. The switch's own
+    # package validation (gate 6) is the authoritative check.
 
     # Reboot wait: up to 60 attempts x 30 s = 30 minutes.
     reboot_retries: 60
@@ -105,11 +109,13 @@
           - run_mode in ['check_only', 'install_only', 'install_and_reboot']
           - validate_package in ['yes', 'no']
           - save_rescue in ['yes', 'no']
+          - min_free_mb is match('^[0-9]+$')
           - version_from_filename | length > 0 or target_version | trim | length > 0
         fail_msg: >-
           Invalid input. MD5 must be 32 hex characters; run_mode must be
           check_only, install_only or install_and_reboot; validate_package and
-          save_rescue must be yes or no; and either give a target version or use a file name
+          save_rescue must be yes or no; min_free_mb must be a whole number of
+          MB; and either give a target version or use a file name
           that contains one.
       vars:
         version_from_filename: "{{ image_filename | regex_search('[0-9]+\\.[0-9]+R[0-9]+(-S[0-9]+(\\.[0-9]+)?)?') }}"
@@ -131,6 +137,7 @@
           - "Run mode:          {{ run_mode }}"
           - "Validate package:  {{ validate_package if run_mode != 'check_only' else 'yes (always in check_only)' }}"
           - "Save rescue config: {{ save_rescue }}"
+          - "Minimum free space: {{ min_free_mb }} MB"
 
     # ---------------------------------------------------------------- gate 1
     - name: 1. Connect and read the current version and free space
@@ -241,9 +248,12 @@
           debug:
             msg: >-
               STOP: only {{ free_mb }} MB free on {{ inventory_hostname }},
-              minimum is {{ min_free_mb }} MB. On the switch run
-              'request system storage cleanup', remove any unused files from
-              /var/tmp, then run this job again. Nothing was changed.
+              minimum is {{ min_free_mb }} MB. Nothing was changed. Warning:
+              on this platform 'request system storage cleanup' also deletes
+              the software images in /var/tmp, so do not run it while your
+              image is there. If nothing else can be removed, relaunch with a
+              lower "Minimum free space" and let the switch's own package
+              validation decide whether the space is enough.
 
         - name: Stop processing this host
           meta: end_host

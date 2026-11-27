@@ -34,7 +34,10 @@
       "question_description": "Yes: the switch checks the image against its configuration before installing (about 10 minutes on an EX2300). No: skip that check.",
       "variable": "validate_package",
       "required": true,
-      "choices": ["yes", "no"],
+      "choices": [
+        "yes",
+        "no"
+      ],
       "default": "yes"
     },
     {
@@ -43,7 +46,11 @@
       "question_description": "check_only: run the checks and stop, nothing is installed. install_only: install, no reboot. install_and_reboot: install, reboot, wait and verify.",
       "variable": "run_mode",
       "required": true,
-      "choices": ["check_only", "install_only", "install_and_reboot"],
+      "choices": [
+        "check_only",
+        "install_only",
+        "install_and_reboot"
+      ],
       "default": "check_only"
     },
     {
@@ -52,8 +59,21 @@
       "question_description": "Recommended. Only applies when something gets installed.",
       "variable": "save_rescue",
       "required": true,
-      "choices": ["yes", "no"],
+      "choices": [
+        "yes",
+        "no"
+      ],
       "default": "yes"
+    },
+    {
+      "type": "integer",
+      "question_name": "Minimum free space (MB)",
+      "question_description": "The job stops before installing if the switch has less free space than this. Default 400. Lower it only if you understand the risk; the switch's own package validation still runs.",
+      "variable": "min_free_mb",
+      "required": true,
+      "min": 0,
+      "max": 100000,
+      "default": 400
     }
   ]
 }
