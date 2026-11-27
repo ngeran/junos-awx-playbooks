@@ -1,0 +1,400 @@
+---
+# Step 2 - pre-checks, then install and (optionally) reboot a Junos image.
+#
+# Decision tree (each gate is a separate task so AWX shows progress):
+#   1  cannot connect                         -> FAIL
+#   2  already on target version              -> DONE, stop
+#   3  image not in /var/tmp                  -> STOP, user uploads manually
+#   4  MD5 does not match                     -> FAIL, image is corrupt
+#   5  not enough free space                  -> STOP, user runs storage cleanup
+#   6  device rejects the package             -> STOP, show the device reason
+#      (skipped when validate_package = no)
+#   7  rescue config missing (install modes)  -> save it, if asked
+#   8  install                                -> (10-30 min, silent)
+#   9  reboot + wait, if asked
+#   10 version is not the target afterwards   -> FAIL
+#
+# User choices:
+#   validate_package  yes: the switch checks the image against its config before
+#                     installing. no: skip that check.
+#   run_mode          check_only         run the checks and stop. Changes nothing.
+#                     install_only       checks, install, stop. No reboot.
+#                     install_and_reboot checks, install, reboot, wait, verify.
+- name: Step 2 - Upgrade Junos image on EX
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  # Ansible asks for these on the command line. In AWX they come from the
+  # Job Template survey (awx-survey-upgrade.json); -e also skips a prompt.
+  vars_prompt:
+    - name: image_filename
+      prompt: "Image file name on the switch (e.g. junos-arm-32-25.2R2-S2.2.tgz)"
+    - name: expected_md5
+      prompt: "Expected MD5 checksum of the image"
+    - name: target_version
+      prompt: "Target Junos version (blank = taken from the file name)"
+      default: ""
+    - name: validate_package
+      prompt: "Validate the package against the config before installing? (yes / no)"
+      default: "yes"
+    - name: run_mode
+      prompt: "Run mode (check_only / install_only / install_and_reboot)"
+      default: "check_only"
+    - name: save_rescue
+      prompt: "Save the rescue config if none is set? (yes / no)"
+      default: "yes"
+
+  vars:
+    # The password comes from the AWX Machine credential (or -k locally).
+    ansible_user: admin
+
+    image_full_path: "/var/tmp/{{ image_filename }}"
+
+    # Rule of thumb: the image is ~300 MB and the install needs headroom.
+    # The device's own package validation (gate 6) is the authoritative check.
+    min_free_mb: 400
+
+    # Reboot wait: up to 60 attempts x 30 s = 30 minutes.
+    reboot_retries: 60
+    reboot_delay: 30
+
+  tasks:
+    - name: 0. Check the entered values
+      assert:
+        that:
+          - expected_md5 is match('^[a-fA-F0-9]{32}$')
+          - run_mode in ['check_only', 'install_only', 'install_and_reboot']
+          - validate_package in ['yes', 'no']
+          - save_rescue in ['yes', 'no']
+          - version_from_filename | length > 0 or target_version | trim | length > 0
+        fail_msg: >-
+          Invalid input. MD5 must be 32 hex characters; run_mode must be
+          check_only, install_only or install_and_reboot; validate_package and
+          save_rescue must be yes or no; and either give a target version or use a file name
+          that contains one.
+      vars:
+        version_from_filename: "{{ image_filename | regex_search('[0-9]+\\.[0-9]+R[0-9]+(-S[0-9]+(\\.[0-9]+)?)?') }}"
+
+    - name: 0b. Resolve the target version and options
+      set_fact:
+        version_from_filename: "{{ image_filename | regex_search('[0-9]+\\.[0-9]+R[0-9]+(-S[0-9]+(\\.[0-9]+)?)?') }}"
+
+    - name: 0c. Set the target version
+      set_fact:
+        target: "{{ (target_version | trim) if (target_version | trim) | length > 0 else version_from_filename }}"
+
+    - name: 0d. Show the plan
+      debug:
+        msg:
+          - "Switch:            {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname) }})"
+          - "Image:             {{ image_full_path }}"
+          - "Target version:    {{ target }}"
+          - "Run mode:          {{ run_mode }}"
+          - "Validate package:  {{ validate_package if run_mode != 'check_only' else 'yes (always in check_only)' }}"
+          - "Save rescue config: {{ save_rescue }}"
+
+    # ---------------------------------------------------------------- gate 1
+    - name: 1. Connect and read the current version and free space
+      juniper.device.command:
+        commands:
+          - "show version"
+          - "show system storage"
+        formats: text
+        timeout: 120
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: facts_out
+
+    - name: 1b. Fail if the switch is unreachable
+      fail:
+        msg: "Cannot connect to {{ inventory_hostname }}. Error: {{ facts_out.msg | default('Unknown error') }}"
+      when: facts_out.failed | default(false)
+
+    - name: 1c. Record current version and free space
+      set_fact:
+        current_version: "{{ facts_out.results[0].stdout | regex_search('Junos:\\s*(\\S+)', '\\1') | first }}"
+
+    - name: 1c2. Read the root filesystem line from 'show system storage'
+      set_fact:
+        # Columns: filesystem, size, used, avail, capacity, mount point.
+        root_fs_fields: "{{ facts_out.results[1].stdout | regex_findall('/dev/gpt/junos[^\\n]*') | first | split }}"
+
+    - name: 1c3. Convert the free space to MB
+      set_fact:
+        free_mb: "{{ (root_fs_fields[3] | regex_replace('[^0-9.]', '') | float * unit_multiplier[root_fs_fields[3][-1]]) | round | int }}"
+      vars:
+        unit_multiplier: { 'G': 1024, 'M': 1, 'K': 0.0009765625 }
+
+    - name: 1d. Show what the switch reported
+      debug:
+        msg:
+          - "Current version:   {{ current_version }}"
+          - "Free space on /:   {{ free_mb }} MB (minimum {{ min_free_mb }} MB)"
+
+    # ---------------------------------------------------------------- gate 2
+    - name: 2. Stop if the switch is already on the target version
+      when: current_version == target
+      block:
+        - name: Report that nothing needs to be done
+          debug:
+            msg: "DONE: {{ inventory_hostname }} already runs {{ target }}. Nothing to upgrade."
+
+        - name: Stop processing this host
+          meta: end_host
+
+    - name: 2b. Show the upgrade path
+      debug:
+        msg: "Upgrade path: {{ current_version }} -> {{ target }}"
+
+    # ---------------------------------------------------------------- gate 3
+    - name: 3. Check the image and read its MD5
+      juniper.device.command:
+        commands: "file checksum md5 {{ image_full_path }}"
+        timeout: 600
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: md5_out
+      ignore_errors: yes
+
+    - name: 3b. Read the MD5 from the output
+      set_fact:
+        actual_md5: "{{ md5_out.stdout | default('') | regex_search('[a-f0-9]{32}') }}"
+
+    - name: 3c. Stop if the image is not on the switch
+      when: not actual_md5
+      block:
+        - name: Tell the user to upload the image manually
+          debug:
+            msg: >-
+              STOP: {{ image_full_path }} was not found on {{ inventory_hostname }}.
+              Upload the image to /var/tmp manually and run this job again.
+              Nothing was changed.
+
+        - name: Stop processing this host
+          meta: end_host
+
+    # ---------------------------------------------------------------- gate 4
+    - name: 4. Fail if the MD5 does not match
+      fail:
+        msg: >-
+          FAIL: The image on the switch is corrupt or is not the image you
+          expect. Expected {{ expected_md5 | lower }}, got {{ actual_md5 }}.
+          Delete the file, upload it again and rerun.
+      when: actual_md5 != expected_md5 | lower
+
+    - name: 4b. Confirm the image is intact
+      debug:
+        msg: "Image MD5 is correct ({{ actual_md5 }})."
+
+    # ---------------------------------------------------------------- gate 5
+    - name: 5. Stop if there is not enough free space
+      when: free_mb | int < min_free_mb | int
+      block:
+        - name: Tell the user to run storage cleanup
+          debug:
+            msg: >-
+              STOP: only {{ free_mb }} MB free on {{ inventory_hostname }},
+              minimum is {{ min_free_mb }} MB. On the switch run
+              'request system storage cleanup', remove any unused files from
+              /var/tmp, then run this job again. Nothing was changed.
+
+        - name: Stop processing this host
+          meta: end_host
+
+    # ---------------------------------------------------------------- gate 6
+    # Validation always runs in check_only mode (that is the point of that
+    # mode); otherwise it follows the user's choice.
+    # Measured on the EX2300-C: about 11 minutes.
+    - name: 6. Ask the switch to validate the package (10 to 15 minutes, no output until done)
+      when: run_mode == 'check_only' or validate_package == 'yes'
+      juniper.device.command:
+        commands: "request system software validate {{ image_full_path }}"
+        timeout: 1800
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: validate_out
+      ignore_errors: yes
+      changed_when: false
+
+    - name: 6b. Show the validation result
+      when: run_mode == 'check_only' or validate_package == 'yes'
+      debug:
+        msg: "{{ validate_out.msg | default('') }} Last lines of the switch output:\n{{ ((validate_out.stdout | default('')).splitlines()[-12:]) | join('\n') }}"
+
+    - name: 6c. Stop if the switch rejected the package
+      when: >
+        (run_mode == 'check_only' or validate_package == 'yes')
+        and (validate_out.failed | default(false)
+             or validate_out.stdout | default('') is search('(?im)^\\s*(protocol: operation-failed|error)'))
+      vars:
+        validation_output: "{{ (validate_out.msg | default('') ~ '\n' ~ validate_out.stdout | default('')) | trim }}"
+      block:
+        - name: Give specific advice when another install is still running
+          debug:
+            msg: >-
+              The switch believes another package installation is in progress
+              (often a stale lock after an interrupted install). On the switch,
+              check for a leftover 'request system software' process, wait for
+              it to finish or clear it, then run this job again.
+          when: validation_output is search('(?i)another package installation')
+
+        - name: Tell the user the switch refused the image
+          fail:
+            msg: >-
+              STOP: {{ inventory_hostname }} rejected {{ image_filename }}.
+              Nothing was installed. Output from the switch:
+
+              {{ validation_output }}
+
+    - name: 6d. Confirm the switch accepted the package
+      when: run_mode == 'check_only' or validate_package == 'yes'
+      debug:
+        msg: "The switch validated the package successfully."
+
+    - name: 6e. Warn that validation was skipped
+      when: run_mode != 'check_only' and validate_package == 'no'
+      debug:
+        msg: >-
+          WARNING: the switch will NOT check the image against its
+          configuration before installing. If the image is incompatible, the
+          install may fail or the switch may come back without its config
+          applied.
+
+    # ---------------------------------------------------------------- validate only
+    - name: 6z. Stop here in check_only mode
+      when: run_mode == 'check_only'
+      block:
+        - name: Report that all checks passed
+          debug:
+            msg: >-
+              ALL CHECKS PASSED for {{ inventory_hostname }}: {{ current_version }}
+              -> {{ target }}. The software was not changed (validation only
+              removed a few rotated log files). To install, run again with
+              run_mode = install_only or install_and_reboot.
+
+        - name: Stop processing this host
+          meta: end_host
+
+    # ---------------------------------------------------------------- gate 7
+    - name: 7. Check whether a rescue configuration exists
+      juniper.device.command:
+        commands: "show system configuration rescue"
+        timeout: 120
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: rescue_out
+      ignore_errors: yes
+      changed_when: false
+
+    - name: 7b. Save the rescue config if it is missing and the user agreed
+      juniper.device.command:
+        commands: "request system configuration rescue save"
+        timeout: 120
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: rescue_save_out
+      when:
+        - save_rescue == 'yes'
+        - rescue_out.stdout | default('') is search('No rescue configuration')
+      changed_when: true
+
+    - name: 7c. Report the rescue config status
+      debug:
+        msg: >-
+          {{ 'Rescue configuration saved.' if (rescue_save_out is changed) else
+             ('WARNING: no rescue configuration is set and saving was not requested.' if rescue_out.stdout | default('') is search('No rescue configuration')
+              else 'Rescue configuration already exists.') }}
+
+    # ---------------------------------------------------------------- gate 8
+    - name: 8. Show what happens next
+      debug:
+        msg: >-
+          Installing {{ image_full_path }} now. On this switch validation
+          alone takes about 10 minutes, so expect 20 to 40 minutes in total
+          with no output until it finishes. Do not cancel the job.
+
+    - name: 8b. Install the image
+      juniper.device.software:
+        remote_package: "{{ image_full_path }}"
+        no_copy: true
+        cleanfs: false
+        reboot: "{{ run_mode == 'install_and_reboot' }}"
+        validate: "{{ validate_package == 'yes' }}"
+        install_timeout: 1800
+        version: "{{ target }}"
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: install_out
+
+    - name: 8c. Show the install result
+      debug:
+        msg: "{{ install_out.msg | default(install_out) }}"
+
+    # ---------------------------------------------------------------- gate 9
+    - name: 9. Stop after install_only
+      when: run_mode == 'install_only'
+      block:
+        - name: Tell the user to reboot manually
+          debug:
+            msg: >-
+              INSTALLED: {{ image_filename }} is installed on {{ inventory_hostname }}
+              but the switch still runs {{ current_version }} until it reboots.
+              Reboot it with 'request system reboot' when you are ready.
+
+        - name: Stop processing this host
+          meta: end_host
+
+    - name: 9b. Record when the reboot wait started
+      set_fact:
+        reboot_started: "{{ '%Y-%m-%d %H:%M:%S' | strftime(now(utc=true, fmt='%s') | int) }}"
+
+    - name: 9c. Wait for the switch to come back on the target version
+      juniper.device.command:
+        commands: "show version"
+        timeout: 120
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: reboot_out
+      until: (reboot_out.stdout | default('')) is search('Junos:\\s*' ~ (target | regex_escape) ~ '(\\s|$)')
+      retries: "{{ reboot_retries }}"
+      delay: "{{ reboot_delay }}"
+      changed_when: false
+
+    # ---------------------------------------------------------------- gate 10
+    - name: 10. Read the version and alarms after the reboot
+      juniper.device.command:
+        commands:
+          - "show version"
+          - "show system alarms"
+        formats: text
+        timeout: 120
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: after_out
+
+    - name: 10b. Record the final version and alarms
+      set_fact:
+        final_version: "{{ after_out.results[0].stdout | regex_search('Junos:\\s*(\\S+)', '\\1') | first }}"
+        alarms_after: "{{ after_out.results[1].stdout | default('') }}"
+
+    - name: 10c. Fail if the upgrade did not take
+      fail:
+        msg: "FAIL: {{ inventory_hostname }} rebooted but runs {{ final_version }}, expected {{ target }}. Check why the install did not apply."
+      when: final_version != target
+
+    - name: 11. Report the result
+      debug:
+        msg:
+          - "SUCCESS: {{ inventory_hostname }} upgraded {{ current_version }} -> {{ final_version }}."
+          - "Reboot wait started: {{ reboot_started }}"
+          - "Alarms after upgrade:"
+          - "{{ alarms_after }}"

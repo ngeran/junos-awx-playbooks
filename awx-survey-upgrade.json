@@ -1,0 +1,59 @@
+{
+  "name": "Upgrade options",
+  "description": "Which image to install, and how far the job is allowed to go.",
+  "spec": [
+    {
+      "type": "text",
+      "question_name": "Image file name",
+      "question_description": "File name of the Junos image in /var/tmp on the switch, for example junos-arm-32-25.2R2-S2.2.tgz",
+      "variable": "image_filename",
+      "required": true,
+      "min_length": 1,
+      "max_length": 255
+    },
+    {
+      "type": "text",
+      "question_name": "Expected MD5 checksum",
+      "question_description": "The 32-character MD5 checksum the image should have.",
+      "variable": "expected_md5",
+      "required": true,
+      "min_length": 32,
+      "max_length": 32
+    },
+    {
+      "type": "text",
+      "question_name": "Target Junos version",
+      "question_description": "Optional. Leave blank to take it from the file name. Example: 25.2R2-S2.2",
+      "variable": "target_version",
+      "required": false,
+      "max_length": 64
+    },
+    {
+      "type": "multiplechoice",
+      "question_name": "Validate the package before installing?",
+      "question_description": "Yes: the switch checks the image against its configuration before installing (about 10 minutes on an EX2300). No: skip that check.",
+      "variable": "validate_package",
+      "required": true,
+      "choices": ["yes", "no"],
+      "default": ["yes"]
+    },
+    {
+      "type": "multiplechoice",
+      "question_name": "Run mode",
+      "question_description": "check_only: run the checks and stop, nothing is installed. install_only: install, no reboot. install_and_reboot: install, reboot, wait and verify.",
+      "variable": "run_mode",
+      "required": true,
+      "choices": ["check_only", "install_only", "install_and_reboot"],
+      "default": ["check_only"]
+    },
+    {
+      "type": "multiplechoice",
+      "question_name": "Save the rescue config if none is set?",
+      "question_description": "Recommended. Only applies when something gets installed.",
+      "variable": "save_rescue",
+      "required": true,
+      "choices": ["yes", "no"],
+      "default": ["yes"]
+    }
+  ]
+}

@@ -90,6 +90,30 @@ or load the file with the API) so the launcher is asked when starting the job.
 If the image is not on the switch, the play prints a message telling the user
 to upload it manually and stops for that host without failing.
 
+## Step 2: upgrade (`step2_upgrade.yml`)
+
+Runs the checks, then installs and optionally reboots. Each check is a gate
+that either fails, or stops with an instruction for the user.
+
+Inputs come from prompts on the command line, or in AWX from the survey in
+`awx-survey-upgrade.json`:
+
+| Variable | Meaning |
+| --- | --- |
+| `image_filename` | File in `/var/tmp` on the switch |
+| `expected_md5` | MD5 the image must have |
+| `target_version` | Optional; taken from the file name if blank |
+| `validate_package` | `yes` / `no`: check the image against the config before installing |
+| `run_mode` | `check_only`, `install_only`, `install_and_reboot` |
+| `save_rescue` | `yes` / `no`: save a rescue config if none exists |
+
+Measured on an EX2300-C-12P: package validation takes about 11 minutes and a
+reboot about 6.5 minutes. AWX shows no output while a single task runs, so
+expect silence during validation and during the install.
+
+Not yet run against a switch: `install_only` and `install_and_reboot`. Only
+`check_only` has been tested, and it passed every gate.
+
 ## Test order when the switch is back online
 
 ```bash
