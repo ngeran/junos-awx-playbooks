@@ -74,6 +74,18 @@
       "min": 0,
       "max": 100000,
       "default": 400
+    },
+    {
+      "type": "multiplechoice",
+      "question_name": "Fail the job if the post-check needs review?",
+      "question_description": "No (recommended): differences between the state before and after are listed in the report for an engineer to review, and the job stays successful. Yes: the job ends as failed when there is anything to review.",
+      "variable": "post_check_strict",
+      "required": true,
+      "choices": [
+        "no",
+        "yes"
+      ],
+      "default": "no"
     }
   ]
 }

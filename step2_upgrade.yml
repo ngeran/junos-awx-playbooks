@@ -44,6 +44,9 @@
     - name: min_free_mb
       prompt: "Minimum free space in MB required before installing (default 400)"
       default: "400"
+    - name: post_check_strict
+      prompt: "Fail the job if the post-check needs review? (yes / no)"
+      default: "no"
 
   vars:
     # The password comes from the AWX Machine credential (or -k locally).
@@ -65,8 +68,8 @@
     reboot_retries: 60
     reboot_delay: 30
 
-    # Fail the job when the post-check differs from the pre-check.
-    post_check_strict: true
+    # post_check_strict is asked at launch. "no" (default): differences are
+    # listed for an engineer to review and the job stays successful.
 
     # Read before the install and again after the reboot, then compared.
     # `| no-more` and `| count` are rejected by juniper.device.command; NETCONF
@@ -110,12 +113,13 @@
           - validate_package in ['yes', 'no']
           - save_rescue in ['yes', 'no']
           - min_free_mb is match('^[0-9]+$')
+          - post_check_strict in ['yes', 'no']
           - version_from_filename | length > 0 or target_version | trim | length > 0
         fail_msg: >-
           Invalid input. MD5 must be 32 hex characters; run_mode must be
           check_only, install_only or install_and_reboot; validate_package and
           save_rescue must be yes or no; min_free_mb must be a whole number of
-          MB; and either give a target version or use a file name
+          MB; post_check_strict must be yes or no; and either give a target version or use a file name
           that contains one.
       vars:
         version_from_filename: "{{ image_filename | regex_search('[0-9]+\\.[0-9]+R[0-9]+(-S[0-9]+(\\.[0-9]+)?)?') }}"
@@ -138,6 +142,12 @@
           - "Validate package:  {{ validate_package if run_mode != 'check_only' else 'yes (always in check_only)' }}"
           - "Save rescue config: {{ save_rescue }}"
           - "Minimum free space: {{ min_free_mb }} MB"
+          - "Fail if post-check needs review: {{ post_check_strict }}"
+
+    - name: 0e. Record the start time and default the comparison table
+      ansible.builtin.set_fact:
+        t_start: "{{ now(utc=true, fmt='%Y-%m-%d %H:%M:%S') }}"
+        report_table: "Not captured: the run stopped before the pre-check."
 
     # ---------------------------------------------------------------- gate 1
     - name: 1. Connect and read the current version and free space
@@ -153,6 +163,12 @@
       register: facts_out
       # Let task 1b report this with a useful message instead of a raw error.
       ignore_errors: yes
+
+    - name: 1a. Write the report when the switch cannot be reached
+      ansible.builtin.include_tasks: tasks/build_report.yml
+      vars:
+        report_status: "FAILED: cannot connect to the switch"
+      when: facts_out.failed | default(false)
 
     - name: 1b. Fail if the switch is unreachable
       fail:
@@ -224,6 +240,11 @@
               Upload the image to /var/tmp manually and run this job again.
               Nothing was changed.
 
+        - name: Write the report
+          ansible.builtin.include_tasks: tasks/build_report.yml
+          vars:
+            report_status: "STOPPED: the image is not on the switch, nothing was changed"
+
         - name: Stop processing this host
           meta: end_host
 
@@ -254,6 +275,11 @@
               image is there. If nothing else can be removed, relaunch with a
               lower "Minimum free space" and let the switch's own package
               validation decide whether the space is enough.
+
+        - name: Write the report
+          ansible.builtin.include_tasks: tasks/build_report.yml
+          vars:
+            report_status: "STOPPED: not enough free space, nothing was changed"
 
         - name: Stop processing this host
           meta: end_host
@@ -296,6 +322,13 @@
               it to finish or clear it, then run this job again.
           when: validation_output is search('(?i)another package installation')
 
+        - name: Write the report
+          ansible.builtin.include_tasks: tasks/build_report.yml
+          vars:
+            report_status: "STOPPED: the switch rejected the image, nothing was installed"
+            report_notes:
+              - "Switch output: {{ validation_output }}"
+
         - name: Tell the user the switch refused the image
           fail:
             msg: >-
@@ -329,6 +362,11 @@
               -> {{ target }}. The software was not changed (validation only
               removed a few rotated log files). To install, run again with
               run_mode = install_only or install_and_reboot.
+
+        - name: Write the report
+          ansible.builtin.include_tasks: tasks/build_report.yml
+          vars:
+            report_status: "CHECKS PASSED: nothing was installed"
 
         - name: Stop processing this host
           meta: end_host
@@ -409,6 +447,14 @@
               but the switch still runs {{ current_version }} until it reboots.
               Reboot it with 'request system reboot' when you are ready.
 
+        - name: Write the report
+          ansible.builtin.include_tasks: tasks/build_report.yml
+          vars:
+            report_status: "INSTALLED: waiting for a manual reboot, no post-check was run"
+            report_notes:
+              - "The switch keeps running {{ current_version }} until it is rebooted."
+              - "Run check_only after the reboot to confirm the new version."
+
         - name: Stop processing this host
           meta: end_host
 
@@ -472,17 +518,32 @@
       ansible.builtin.debug:
         msg: "{{ state_rows | junos_table }}"
 
-    - name: 11c. List the differences
+    - name: 11c2. Record the items that need an engineer's review
+      ansible.builtin.set_fact:
+        review_items: >-
+          {{ state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS'])
+             | map(attribute='check') | zip(state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS'])
+                                            | map(attribute='note')) | map('join', ': ') | list }}
+
+    - name: 11c. List the items that need review
       ansible.builtin.debug:
-        msg: "{{ state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | map(attribute='note') | select('match', '.+') | list }}"
-      when: state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | list | length > 0
+        msg: "{{ review_items }}"
+      when: review_items | length > 0
+
+    - name: 11c3. Write the report
+      ansible.builtin.include_tasks: tasks/build_report.yml
+      vars:
+        report_status: "{{ 'UPGRADED - needs engineer review of the post-check' if review_items | length > 0 else 'SUCCESS' }}"
+        report_table: "{{ state_rows | junos_table }}"
+        report_notes: "{{ ['Items to review:'] + review_items if review_items | length > 0 else [] }}"
 
     - name: 11d. Fail if the switch is not in the same state as before
       ansible.builtin.fail:
         msg: >-
-          The upgrade succeeded but the post-check differs from the pre-check.
-          See the table above. Nothing is reverted automatically; check the
-          switch. Set post_check_strict to no to make this a warning.
+          The upgrade succeeded but {{ review_items | length }} item(s) in the
+          post-check need review by an engineer. See the table and the report.
+          Nothing is reverted automatically. Launch with post_check_strict = no
+          to keep the job successful and review the report instead.
       when:
-        - post_check_strict | bool
-        - state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | list | length > 0
+        - post_check_strict == 'yes'
+        - review_items | length > 0

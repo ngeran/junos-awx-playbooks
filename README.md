@@ -136,8 +136,18 @@ never pages, and the route count is computed from the parsed routes.
 `request system configuration rescue save` is an action, not a check; it is
 done once before the install when `save_rescue` is `yes`.
 
-The result is a plain-text table. Set `post_check_strict: no` to report
-differences without failing the job.
+The result is a plain-text table.
+
+The playbook does not judge differences. Rows are:
+
+- `same` and `skipped` (feature not configured or not running): nothing to do.
+- `informational`: expected after any install. Only the `set version` line of
+  the configuration changed, or alarms about a full `/var` partition cleared.
+- `CHANGED` and `NEW ALARMS`: listed in the report under **Engineer review**
+  with a sign-off section.
+
+By default the job stays successful and the engineer reviews the report.
+Launch with `post_check_strict: yes` to fail the job instead.
 
 Parsing lives in `filter_plugins/junos_state.py`. With `install_only` there is
 no post-check inside the job, because the reboot happens later by hand.
@@ -149,6 +159,25 @@ Not yet run against a switch: `install_only` and `install_and_reboot` with the
 comparison included. The comparison itself was tested by capturing the same
 switch twice, and the parser was checked on this EX2300-C. Other Junos
 platforms may print these commands differently.
+
+## Report
+
+Every run of `step2_upgrade.yml` ends by building a Markdown report
+(`templates/upgrade_report.md.j2`): result, versions, start and finish time,
+what was requested, the pre/post table and the list of differences. It is
+written when the run succeeds and when it stops or fails at a later gate
+(the input check and the MD5 check fail before a report is possible).
+
+The report is available in two places:
+
+- **Job output.** It is printed at the end, so it is part of the job log.
+  In AWX open the job, and download the output as a file with
+  `GET /api/v2/jobs/<id>/stdout/?format=txt_download` (saves `job_<id>.txt`).
+- **Job artifacts.** It is stored with `set_stats` as `report_markdown`
+  (AWX: job output, Artifacts tab; API: `GET /api/v2/jobs/<id>/artifacts/`).
+
+AWX keeps both with the job record. The files inside the job's own container
+disappear when the job ends, so the report is not written to disk there.
 
 ## Test order when the switch is back online
 

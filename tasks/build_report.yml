@@ -1,0 +1,42 @@
+---
+# Builds a Markdown report of the run and attaches it to the AWX job.
+#
+# Required: report_status (text). Everything else is optional; whatever is
+# not defined is shown as unknown or left out.
+#
+# Sets:
+#   report_md          the report text
+# And stores it in the job artifacts (AWX: Output -> Artifacts tab).
+- name: "Report: collect the differences"
+  ansible.builtin.set_fact:
+    report_differences: >-
+      {{ state_rows | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS'])
+         | map(attribute='note') | select('match', '.+') | list }}
+  when: state_rows is defined
+
+- name: "Report: list the checks that need review"
+  ansible.builtin.set_fact:
+    report_review: >-
+      {{ state_rows | default([]) | selectattr('result', 'in', ['CHANGED', 'NEW ALARMS']) | list }}
+
+- name: "Report: record the finish time"
+  ansible.builtin.set_fact:
+    t_end: "{{ now(utc=true, fmt='%Y-%m-%d %H:%M:%S') }}"
+
+- name: "Report: build the Markdown text"
+  ansible.builtin.set_fact:
+    report_md: "{{ lookup('template', 'templates/upgrade_report.md.j2') }}"
+
+- name: "Report: show the report in the job output"
+  ansible.builtin.debug:
+    msg: "{{ report_md }}"
+
+- name: "Report: attach the report to the AWX job"
+  ansible.builtin.set_stats:
+    data:
+      report_status: "{{ report_status }}"
+      report_markdown: "{{ report_md }}"
+      version_before: "{{ current_version | default('unknown') }}"
+      version_after: "{{ final_version | default('') }}"
+    per_host: true
+    aggregate: false

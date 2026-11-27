@@ -211,11 +211,11 @@ def _parse_lldp(lines) -> dict:
 
 
 def _parse_re(lines) -> dict:
-    """Routing Engine facts that are not expected to change across a reboot."""
+    """Routing Engine identity. Temperatures, CPU, DRAM and uptime are not kept."""
     keep = {}
     for line in lines:
         stripped = line.strip()
-        for label in ("Current state", "Mastership", "Model", "DRAM"):
+        for label in ("Current state", "Mastership", "Model"):
             if stripped.startswith(label):
                 keep[label] = stripped[len(label):].strip()
     return keep
@@ -326,7 +326,7 @@ def junos_diff(before, after) -> list:
     new = sorted(set(a_alm) - set(b_alm))
     cleared = sorted(set(b_alm) - set(a_alm))
     changed = bool(new or cleared)
-    result = "NEW ALARMS" if new else ("alarms cleared" if cleared else "same")
+    result = "NEW ALARMS" if new else ("informational" if cleared else "same")
     note = "; ".join(["new: " + x for x in new] + ["cleared: " + x for x in cleared])
     if not changed and a_alm:
         note = "after: " + "; ".join(a_alm)
@@ -428,17 +428,50 @@ def junos_diff(before, after) -> list:
     optional("LACP", "lacp", "lacp_text", lambda v: "%d aggregated interfaces" % (v or 0))
 
     def re_text(state):
-        return "%s %s, %s" % (state.get("Current state", "?"), state.get("Model", "?"), state.get("DRAM", ""))
+        return "%s %s" % (state.get("Current state", "?"), state.get("Model", "?"))
 
-    b_re, a_re = before.get("routing_engine", {}), after.get("routing_engine", {})
+    def re_identity(state):
+        return {k: v for k, v in (state or {}).items() if k in ("Current state", "Mastership", "Model")}
+
+    b_re, a_re = re_identity(before.get("routing_engine")), re_identity(after.get("routing_engine"))
     rows.append(_row("Routing Engine", re_text(b_re), re_text(a_re),
                      "same" if b_re == a_re else "CHANGED", "; ".join(_changed_map(b_re, a_re))))
 
-    same_config = before["config"] == after["config"]
-    rows.append(_row("Running configuration", "captured", "captured",
-                     "same" if same_config else "CHANGED",
-                     "" if same_config else "the configuration changed during the upgrade"))
+    rows.append(_config_row(before.get("config", ""), after.get("config", "")))
     return rows
+
+
+_SECRET_IN_LINE = re.compile(r"(?i)(encrypted-password|secret|auth-key|password|community|authentication-key)")
+
+
+def _redact(line: str) -> str:
+    """Keep the start of a config line and hide everything from the secret keyword on."""
+    match = _SECRET_IN_LINE.search(line)
+    if match:
+        return line[:match.start()].rstrip() + " ***"
+    return line
+
+
+def _config_row(before_text: str, after_text: str) -> dict:
+    """Compare 'show configuration | display set' output, ignoring the version line."""
+    def lines(text):
+        return set(line.strip() for line in text.splitlines()
+                   if line.strip() and not line.startswith("#") and not line.startswith("set version "))
+
+    before, after = lines(before_text), lines(after_text)
+    removed, added = sorted(before - after), sorted(after - before)
+    if not removed and not added:
+        before_v = re.search(r"^set version (.+)$", before_text.strip(), re.MULTILINE)
+        after_v = re.search(r"^set version (.+)$", after_text.strip(), re.MULTILINE)
+        same_v = (before_v.group(1) if before_v else None) == (after_v.group(1) if after_v else None)
+        note = "identical" if same_v else "only the version line changed (%s -> %s), which the installer rewrites" % (
+            before_v.group(1) if before_v else "?", after_v.group(1) if after_v else "?")
+        return _row("Running configuration", "%d lines" % len(before), "%d lines" % len(after),
+                    "same" if same_v else "informational", note)
+    detail = "; ".join(["removed: " + _redact(x) for x in removed[:8]] + ["added: " + _redact(x) for x in added[:8]])
+    if len(removed) + len(added) > 16:
+        detail += "; ... %d more lines" % (len(removed) + len(added) - 16)
+    return _row("Running configuration", "%d lines" % len(before), "%d lines" % len(after), "CHANGED", detail)
 
 
 def junos_table(rows) -> str:
