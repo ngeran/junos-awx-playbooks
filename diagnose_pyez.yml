@@ -1,0 +1,41 @@
+---
+# Diagnostic playbook.
+#
+# Uses "connection: local" so the juniper.device modules open PyEZ themselves.
+# This bypasses the juniper.device.pyez connection plugin and surfaces the
+# real error instead of the misleading
+# "AttributeError: 'JuniperJunosModule' object has no attribute '_pyez_conn'".
+#
+# Run this first when the EX2300 is back online:
+#   ansible-playbook -i inventory diagnose_pyez.yml -vv
+#
+# Use an AWX Machine credential (username + password) or run with -k locally.
+- name: Diagnose PyEZ connectivity to a Junos device
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  vars:
+    ansible_user: admin
+
+  tasks:
+    - name: 1. Verify junos-eznc and jxmlease are installed in the EE
+      ansible.builtin.command:
+        cmd: >-
+          python3 -c "import jnpr.junos, jxmlease;
+          print('junos-eznc', jnpr.junos.__version__,
+          '| jxmlease', jxmlease.__version__)"
+      changed_when: false
+
+    - name: 2. Open PyEZ directly and run a command
+      juniper.device.command:
+        commands: "show version"
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        user: "{{ ansible_user }}"
+        passwd: "{{ ansible_password | default(omit) }}"
+      register: ver_out
+      ignore_errors: yes
+
+    - name: 3. Show the raw module result (this contains the real error)
+      ansible.builtin.debug:
+        var: ver_out

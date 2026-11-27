@@ -2,56 +2,72 @@
 - name: Step 1 - Connect and Validate Image on EX
   hosts: all
   gather_facts: no
-  connection: juniper.device.pyez
+
+  # AWX 24.6.1's EE ships ansible-core 2.15.12. On that core version the
+  # juniper.device.pyez connection plugin crashes with:
+  #   'Connection' object has no attribute 'nonetype'
+  # (fixed in ansible-core 2.16+). With connection: local the
+  # juniper.device modules open the PyEZ session themselves, which works on
+  # 2.15 and avoids the misleading
+  #   AttributeError: 'JuniperJunosModule' object has no attribute '_pyez_conn'
+  # Once the EE is based on ansible-core >= 2.16, you can switch back to:
+  #   connection: juniper.device.pyez
+  connection: local
 
   vars:
+    # The password comes from the AWX Machine credential (or -k locally).
+    # Never put the password in the playbook.
     ansible_user: admin
-    ansible_password: manolis1
+
     image_filename: "junos-ex-x86-64-25.2R2-S2.tgz"
     expected_md5: "65aa6135da1963993288f48344d1e48d"
     image_full_path: "/var/tmp/{{ image_filename }}"
 
   tasks:
+    # juniper.device.command does not support pipe modifiers such as
+    # "| match ...". Run "show version" and filter the output in Ansible.
     - name: 1. Check connectivity and get current version
       juniper.device.command:
-        commands: "show version | match Junos:"
-        host: "{{ ansible_host }}"
+        commands: "show version"
+        host: "{{ ansible_host | default(inventory_hostname) }}"
         user: "{{ ansible_user }}"
-        passwd: "{{ ansible_password }}"
+        passwd: "{{ ansible_password | default(omit) }}"
       register: ver_out
       ignore_errors: yes
 
     - name: 1b. Fail if unreachable
       fail:
         msg: "Cannot connect. Error: {{ ver_out.msg | default('Unknown error') }}"
-      when: ver_out.failed
+      when: ver_out.failed | default(false)
 
     - name: 2. Show current version
       debug:
-        msg: "Current Junos Version: {{ ver_out.stdout_lines | default([]) }}"
+        msg: "Current Junos Version: {{ ver_out.stdout_lines | default([]) | select('search', 'Junos:') | list }}"
 
     - name: 3. Check image and get MD5
       juniper.device.command:
         commands: "file checksum md5 {{ image_full_path }}"
-        host: "{{ ansible_host }}"
+        host: "{{ ansible_host | default(inventory_hostname) }}"
         user: "{{ ansible_user }}"
-        passwd: "{{ ansible_password }}"
+        passwd: "{{ ansible_password | default(omit) }}"
       register: md5_out
       ignore_errors: yes
 
     - name: 3b. Fail if image missing
       fail:
-        msg: "Image not found. Output: {{ md5_out.stdout | default(md5_out.msg) }}"
-      when: md5_out.failed
+        msg: "Image not found. Output: {{ md5_out.stdout | default(md5_out.msg | default('Unknown error')) }}"
+      when: md5_out.failed | default(false)
 
+    # stdout is a single multi-line string for a single command, so search it
+    # directly. Do not use stdout[0] -- that is the first *character*.
     - name: 4. Extract MD5
       set_fact:
-        actual_md5: "{{ md5_out.stdout[0] | regex_search('[a-f0-9]{32}') }}"
+        actual_md5: "{{ md5_out.stdout | default('') | regex_search('[a-f0-9]{32}') }}"
 
     - name: 4b. Fail if MD5 not parsed
       fail:
-        msg: "Could not parse MD5. Raw: {{ md5_out.stdout }}"
-      when: actual_md5 is not defined
+        msg: "Could not parse MD5. Raw: {{ md5_out.stdout | default('') }}"
+      when: not actual_md5
 
     - name: 5. Compare MD5
       assert:

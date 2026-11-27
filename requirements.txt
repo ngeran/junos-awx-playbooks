@@ -1,0 +1,8 @@
+# Python dependencies for juniper.device (PyEZ).
+#
+# Do NOT use the collection's own requirements.txt here: it also lists the
+# "ansible" metapackage, which would replace AWX's pinned ansible-core.
+junos-eznc>=2.6.0
+jxmlease
+xmltodict
+looseversion

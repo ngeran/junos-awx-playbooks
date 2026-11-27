@@ -1,6 +1,15 @@
 ---
+# Custom AWX Execution Environment for Juniper Junos devices.
+#
+# Base image: quay.io/ansible/awx-ee:24.6.1
+# That image ships ansible-core 2.15.12 / Python 3.9, so the collection
+# versions in requirements.yml must stay compatible with ansible-core 2.15.
 version: 3
-build_arg_defaults:
-  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre'
+
+images:
+  base_image:
+    name: quay.io/ansible/awx-ee:24.6.1
+
 dependencies:
   galaxy: requirements.yml
+  python: requirements.txt

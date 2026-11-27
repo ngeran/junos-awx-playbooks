@@ -1,4 +1,9 @@
 ---
+# Collections baked into the custom Execution Environment.
+#
+# juniper.device 1.0.7 is the last release that supports ansible-core 2.15
+# (the version inside quay.io/ansible/awx-ee:24.6.1). 1.0.8+ requires
+# ansible-core >= 2.16/2.17 and will fail at runtime on this base image.
 collections:
-  - name: ansible.netcommon
   - name: juniper.device
+    version: "1.0.7"
