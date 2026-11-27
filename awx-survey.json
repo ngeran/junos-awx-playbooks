@@ -1,0 +1,24 @@
+{
+  "name": "Image to validate",
+  "description": "Ask which image is on the switch and which MD5 it should have.",
+  "spec": [
+    {
+      "type": "text",
+      "question_name": "Image file name",
+      "question_description": "File name of the Junos image in /var/tmp on the switch, for example junos-arm-32-25.2R2-S2.2.tgz",
+      "variable": "image_filename",
+      "required": true,
+      "min_length": 1,
+      "max_length": 255
+    },
+    {
+      "type": "text",
+      "question_name": "Expected MD5 checksum",
+      "question_description": "The 32-character MD5 checksum the image should have. Use lowercase or uppercase hexadecimal characters.",
+      "variable": "expected_md5",
+      "required": true,
+      "min_length": 32,
+      "max_length": 32
+    }
+  ]
+}

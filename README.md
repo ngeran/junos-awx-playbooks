@@ -76,6 +76,20 @@ EX2300 ansible_host=192.0.2.10 ansible_user=admin
 Do not put the password in the playbook. For local CLI runs, use `-k` or
 `-e ansible_password=...`.
 
+## Supplying the image name and MD5
+
+`step1_validate_image.yml` does not hardcode the image. It needs two values:
+
+- `image_filename`: file name in `/var/tmp` on the switch
+- `expected_md5`: the 32-character MD5 the image should have
+
+On the command line Ansible prompts for both. In AWX, add the survey in
+`awx-survey.json` to the Job Template (**Templates → Edit → Survey → Add**,
+or load the file with the API) so the launcher is asked when starting the job.
+
+If the image is not on the switch, the play prints a message telling the user
+to upload it manually and stops for that host without failing.
+
 ## Test order when the switch is back online
 
 ```bash

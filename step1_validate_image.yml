@@ -14,16 +14,29 @@
   #   connection: juniper.device.pyez
   connection: local
 
+  # On the command line Ansible asks for these interactively. In AWX they are
+  # supplied by the Job Template survey (see awx-survey.json), and a value
+  # passed with -e also skips the prompt.
+  vars_prompt:
+    - name: image_filename
+      prompt: "Image file name on the switch (e.g. junos-arm-32-25.2R2-S2.2.tgz)"
+    - name: expected_md5
+      prompt: "Expected MD5 checksum of the image"
+
   vars:
     # The password comes from the AWX Machine credential (or -k locally).
     # Never put the password in the playbook.
     ansible_user: admin
 
-    image_filename: "junos-ex-x86-64-25.2R2-S2.tgz"
-    expected_md5: "65aa6135da1963993288f48344d1e48d"
     image_full_path: "/var/tmp/{{ image_filename }}"
 
   tasks:
+    - name: 0. Check the entered MD5 looks valid
+      assert:
+        that:
+          - expected_md5 is match('^[a-fA-F0-9]{32}$')
+        fail_msg: "The MD5 must be exactly 32 hexadecimal characters. You entered '{{ expected_md5 }}'."
+
     # juniper.device.command does not support pipe modifiers such as
     # "| match ...". Run "show version" and filter the output in Ansible.
     - name: 1. Check connectivity and get current version
@@ -50,28 +63,35 @@
         host: "{{ ansible_host | default(inventory_hostname) }}"
         user: "{{ ansible_user }}"
         passwd: "{{ ansible_password | default(omit) }}"
+        # Checksumming a ~300 MB image takes longer than the default 30s.
+        timeout: 600
       register: md5_out
       ignore_errors: yes
 
-    - name: 3b. Fail if image missing
-      fail:
-        msg: "Image not found. Output: {{ md5_out.stdout | default(md5_out.msg | default('Unknown error')) }}"
-      when: md5_out.failed | default(false)
-
-    # stdout is a single multi-line string for a single command, so search it
-    # directly. Do not use stdout[0] -- that is the first *character*.
+    # A missing file is NOT a failure. Junos reports it inside the command
+    # output ("No such file or directory") while the task itself succeeds,
+    # so it has to be detected here.
     - name: 4. Extract MD5
       set_fact:
         actual_md5: "{{ md5_out.stdout | default('') | regex_search('[a-f0-9]{32}') }}"
 
-    - name: 4b. Fail if MD5 not parsed
-      fail:
-        msg: "Could not parse MD5. Raw: {{ md5_out.stdout | default('') }}"
+    - name: 4b. Notify and stop if the image is not on the switch
       when: not actual_md5
+      block:
+        - name: Tell the user to upload the image manually
+          debug:
+            msg: >-
+              Image {{ image_full_path }} was not found on {{ inventory_hostname }}
+              and must be uploaded manually. Validation stopped for this host;
+              this is not a failure. Raw output:
+              {{ md5_out.stdout | default(md5_out.msg | default('No output')) }}
+
+        - name: Stop processing this host
+          meta: end_host
 
     - name: 5. Compare MD5
       assert:
         that:
-          - actual_md5 == expected_md5
+          - actual_md5 == expected_md5 | lower
         fail_msg: "MD5 MISMATCH. Expected {{ expected_md5 }}, got {{ actual_md5 }}"
         success_msg: "SUCCESS! Image verified."
