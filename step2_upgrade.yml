@@ -108,10 +108,16 @@
         user: "{{ ansible_user }}"
         passwd: "{{ ansible_password | default(omit) }}"
       register: facts_out
+      # Let task 1b report this with a useful message instead of a raw error.
+      ignore_errors: yes
 
     - name: 1b. Fail if the switch is unreachable
       fail:
-        msg: "Cannot connect to {{ inventory_hostname }}. Error: {{ facts_out.msg | default('Unknown error') }}"
+        msg: >-
+          Cannot connect to {{ inventory_hostname }}:
+          {{ facts_out.msg | default('Unknown error') }}.
+          ConnectAuthError usually means the Job Template has no Machine
+          credential attached, or the username/password in it is wrong.
       when: facts_out.failed | default(false)
 
     - name: 1c. Record current version and free space
